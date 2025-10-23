@@ -1,3 +1,4 @@
+create database Tienda
 Use Tienda;
 
 CREATE TABLE Clientes (
@@ -96,3 +97,138 @@ INSERT INTO Pagos (PedidoID, MetodoPagoID) VALUES
 (5,  2),  
 (6,  3),  
 (7,  2);  
+
+create nonclustered index ix_Clientes_CorreoElectronico
+on Clientes(CorreoElectronico);
+
+create nonclustered index IX_Clientes_FechaRegistro
+on Clientes (FechaRegistro);
+
+create nonclustered index IX_Productos_Nombre
+on Productos (NombreProducto);
+
+create nonclustered index IX_Pedidos_ClienteID
+on Pedidos (ClienteID);
+
+create nonclustered index IX_Pedidos_FechaPedido
+on Pedidos (FechaPedido);
+
+create nonclustered index IX_Pedidos_EstadoID
+on Pedidos (EstadoID);
+
+create nonclustered index IX_DetalleVenta_PedidoProducto
+on DetalleVenta (PedidoID, ProductoID);
+
+create nonclustered index IX_Pagos_PedidoID
+on Pagos (PedidoID);
+
+create nonclustered index IX_Pagos_FechaPago
+on Pagos (FechaPago);
+
+--Transacción T-SQL: Registrar Venta y Actualizar Stock
+
+DECLARE @ClienteID INT = 1; 
+DECLARE @FechaPedido DATETIME = GETDATE();
+DECLARE @TotalVenta DECIMAL(10, 2) = 0.00;
+DECLARE @NuevoPedidoID INT;
+
+DECLARE @ProductosVenta TABLE (
+    ProductoID INT,
+    Cantidad INT,
+    PrecioUnitario DECIMAL(10, 2)
+);
+
+INSERT INTO @ProductosVenta (ProductoID, Cantidad, PrecioUnitario)
+VALUES
+(101, 2, 50.00),  
+(105, 1, 120.00);
+
+-- inicio de la transaccion
+
+BEGIN TRANSACTION;
+
+BEGIN TRY
+   
+    -- Calcular el total de la venta
+    SELECT @TotalVenta = SUM(Cantidad * PrecioUnitario)
+    FROM @ProductosVenta;
+    
+    -- 2. Insertar el encabezado del pedido en la tabla Pedidos
+    INSERT INTO Pedidos (ClienteID, FechaPedido, Estado, Total)
+    VALUES (@ClienteID, @FechaPedido, 'Pendiente', @TotalVenta);
+
+    -- Obtener el ID del pedido recién insertado
+    SET @NuevoPedidoID = SCOPE_IDENTITY();
+
+    -- 3. Insertar el detalle del pedido en la tabla DetalleVenta
+    INSERT INTO DetalleVenta (PedidoID, ProductoID, Cantidad, PrecioUnitario)
+    SELECT @NuevoPedidoID, pv.ProductoID, pv.Cantidad, pv.PrecioUnitario
+    FROM @ProductosVenta pv;
+
+    -- 4. Actualizar el Stock de los productos
+    UPDATE P
+    SET P.Stock = P.Stock - PV.Cantidad
+    FROM Productos P
+    INNER JOIN @ProductosVenta PV ON P.ProductoID = PV.ProductoID;
+
+    -- 5. Si todo fue exitoso, confirmar la transacción
+    COMMIT TRANSACTION;
+    SELECT 'Venta registrada con éxito. PedidoID: ' + CAST(@NuevoPedidoID AS NVARCHAR) AS Resultado;
+
+END TRY
+BEGIN CATCH
+    
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    
+    THROW;
+    SELECT 'Error al registrar la venta. La transacción fue revertida.' AS Resultado;
+
+END CATCH;
+
+
+-- Nombre: Consultar_Ventas_Por_Cliente
+-- Descripción: Consulta todos los pedidos, detalles y pagos
+--              asociados a un ClienteID específico.
+
+CREATE PROCEDURE Consultar_Ventas_Por_Cliente
+    @ClienteID INT
+AS
+BEGIN
+    -- Configuración estándar para consultas
+    SET NOCOUNT ON;
+
+    SELECT
+        C.Nombre AS NombreCliente,
+        P.PedidoID,
+        P.FechaPedido,
+        P.Estado AS EstadoPedido,
+        P.Total AS TotalPedido,
+        DV.Cantidad,
+        DV.PrecioUnitario,
+        PR.NombreProducto,
+        PA.Monto AS MontoPagado,
+        PA.MetodoPago,
+        PA.FechaPago
+    FROM
+        Clientes C
+    
+    INNER JOIN 
+        Pedidos P ON C.ClienteID = P.ClienteID
+    
+    INNER JOIN 
+        DetalleVenta DV ON P.PedidoID = DV.PedidoID
+    
+    INNER JOIN 
+        Productos PR ON DV.ProductoID = PR.ProductoID
+    
+    LEFT JOIN 
+        Pagos PA ON P.PedidoID = PA.PedidoID
+    WHERE
+        C.ClienteID = @ClienteID
+    ORDER BY
+        P.FechaPedido DESC, P.PedidoID;
+
+END
+GO
